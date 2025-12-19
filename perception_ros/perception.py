@@ -27,7 +27,7 @@ device = "cpu"
 class Perception(Node):
     
  
-    def __init__(self,trained_model = "/home/ubuntu/workspace/ros2_ws/src/perception_ros/Perception/model.pt"):
+    def __init__(self,trained_model = "/home/ubuntu/workspace/perception-ros-homework-team-djs/Perception/model/epoch_39.pt"):
         super().__init__('Perception')
         self.image_subscription = self.create_subscription(
             Image,

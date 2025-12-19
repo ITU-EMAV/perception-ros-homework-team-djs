@@ -1,0 +1,9 @@
+*.pt
+
+notes.txt
+
+venv
+
+build/
+install/
+log/ 
