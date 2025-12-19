@@ -1,0 +1,6 @@
+download the trained model on your virtual machine using the google drive link and move it to the perception/model directory: 
+https://drive.usercontent.google.com/download?id=1poFvLwWLSOpGhEHBPIJDMkXJ13KqLIxP&export=download
+
+setting up the dependencies (i didnt do it in a virtual environment bc it wouldnt let me activate it, but it ran fine nonetheless):
+pip install -r requirements.txt
+sudo apt install ros-humble-tf-transformations

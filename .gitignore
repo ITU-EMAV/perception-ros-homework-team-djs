@@ -1,7 +1,5 @@
 *.pt
 
-notes.txt
-
 venv
 
 build/
