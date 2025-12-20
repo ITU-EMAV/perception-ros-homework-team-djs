@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
         'perception = perception_ros.perception:main',
+        'controller = perception_ros.controller:main',
         ],
     },
 )
