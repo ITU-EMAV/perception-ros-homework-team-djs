@@ -1,12 +1,8 @@
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
-import matplotlib.pyplot as plt
 import numpy as np
 import cv2
-import os
-import glob
-from Perception.model.unet import UNet
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -47,9 +43,6 @@ def find_edge_channel(img):
     
     return edges_mask, edges_mask_inv
 
-model_path = "Perception/model/epoch_39.pt"
-test_images_dir = "data\custom\inputs" 
-
 def load_model(model_path):
     model = UNet()
     save_dict = torch.load(model_path, map_location=device)
@@ -64,11 +57,7 @@ def preprocess_image(image):
         transforms.Resize((180, 330)),
         transforms.ToTensor()
     ])
-    
-    image = cv2.imread(image)
-    if image is None:
-        raise ValueError(f"Could not read image: {image}")
-    
+
     original_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     edges, edges_inv = find_edge_channel(image)
@@ -92,28 +81,49 @@ def evaluate(model, image):
         mask_pred = (pred > 0.5).float()
 
     mask_np = mask_pred.squeeze().cpu().numpy()
+    mask_np = (mask_np * 255).astype(np.uint8)
     
     return mask_np
 
 
-def main():
-    model = load_model(model_path)
-
-    image_extensions = ['*.png', '*.jpg', '*.jpeg', '*.bmp']
-    test_images = []
-    for ext in image_extensions:
-        test_images.extend(glob.glob(os.path.join(test_images_dir, ext)))
-    
-    for image in test_images:
-        img_name = os.path.basename(image)
-        print(f"\nEvaluating: {img_name}")
-        
-        try:
-            pred_mask = evaluate(model, image)
-            
-        except Exception as e:
-            print(f"Error processing {img_name}: {e}")
-    
-
 if __name__ == "__main__":
+    # moved segmentation visualizations here to test the evaluate file when run directly, otherwise this file is used for perception.py
+    import os
+    import glob
+    from Perception.model.unet import UNet
+    
+    model_path = "Perception/model/epoch_39.pt"
+    test_images_dir = "data/custom/inputs"
+    
+    def load_model(model_path):
+        model = UNet()
+        save_dict = torch.load(model_path, map_location=device)
+        model.load_state_dict(save_dict["model"])
+        model = model.to(device)
+        model.eval()
+        return model
+    
+    def main():
+        model = load_model(model_path)
+        
+        image_extensions = ['*.png', '*.jpg', '*.jpeg', '*.bmp']
+        test_images = []
+        for ext in image_extensions:
+            test_images.extend(glob.glob(os.path.join(test_images_dir, ext)))
+        
+        for image_path in test_images:
+            img_name = os.path.basename(image_path)
+            print(f"\nEvaluating: {img_name}")
+            
+            try:
+                image = cv2.imread(image_path)
+                if image is None:
+                    raise ValueError(f"Could not read image: {image_path}")
+                
+                pred_mask = evaluate(model, image)
+                print(f"Prediction shape: {pred_mask.shape}")
+                
+            except Exception as e:
+                print(f"Error processing {img_name}: {e}")
+    
     main()
