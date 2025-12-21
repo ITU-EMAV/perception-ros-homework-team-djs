@@ -1,3 +1,7 @@
+# cd ~/workspace/ros2_ws/ && colcon build && source install/setup.bash && ros2 launch gazebo_environment sonoma.launch.py
+# colcon build && source install/local_setup.bash && ros2 run perception_ros perception
+# colcon build && source install/local_setup.bash && ros2 run pure_pursuit visualizer
+
 import rclpy # Import the ROS 2 client library for Python
 from rclpy.node import Node # Import the Node class for creating ROS 2 nodes
 from sensor_msgs.msg import Image,PointCloud2
@@ -11,12 +15,11 @@ import numpy as np
 import sensor_msgs_py.point_cloud2 as pc2
 import torch
 from Perception.model.unet import UNet
-from Perception.evaluate import evaluate
+from Perception.evaluate3 import UNetEvaluator
 
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
-
 from .rotation_utils import transform_pose
 
 import warnings
@@ -27,112 +30,108 @@ device = "cpu"
 class Perception(Node):
     
  
-    def __init__(self,trained_model = "/home/ubuntu/workspace/perception-ros-homework-team-djs/Perception/model/epoch_39.pt"):
+    def __init__(self, trained_model="/home/ubuntu/workspace/ros2_ws/src/perception/perception-ros-homework-team-djs/Perception/model/epoch_39.pt"):
         super().__init__('Perception')
+        
+        # 1. Initialize the Evaluator ONCE. 
+        # Pass your custom path to the weights here.
+        self.unet = UNetEvaluator(weights_path=trained_model)
+
         self.image_subscription = self.create_subscription(
             Image,
-            '/sac/sensors/front_camera/image', #You can change this topic to your image topic
+            "/oakd/rgb/image_raw",
             self.image_callback,
             10)
-        self.pose_publisher = self.create_publisher(
-            PoseStamped,
-            'pose_msg', 
-            10                 
-        )
-
-        # tf buffer
+            
+        self.pose_publisher = self.create_publisher(PoseStamped, 'pose_msg', 10)
+        
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        
         self.br = CvBridge()
-
-        save_dict = torch.load(trained_model, map_location=device)
-        self.model =  UNet()
-        self.model.load_state_dict(save_dict["model"])
-        self.model.eval()
         self.pose_msg = PoseStamped()
         
+    def calculate_path(self, current_frame, pred):
+        # 1. Get dimensions
+        # pred is (180, 330)
+        (h, w) = pred.shape
+        
+        # 2. Split mask into left and right halves
+        left = pred[:, :w//2]
+        right = pred[:, w//2:]
 
+        # 3. Calculate Centers using NumPy (FAST)
+        # Find coordinates where pixels are white (255)
+        # We ignore the top 50 rows just like your original code
+        l_coords = np.where(left[50:, :] > 0)
+        r_coords = np.where(right[50:, :] > 0)
 
-    def calculate_path(self,current_frame,pred):
-        (h,w) = pred.shape
-        left = pred[:,:w//2]
-        right = pred[:,w//2:]
-
-
-        (l_h,l_w) = left.shape
-        sum_horizontal = 0
-        sum_l = 0
-        for i in range(50,l_h):
-            for j in range(l_w):
-                if(left[i,j] == 0):
-                    continue
-                sum_horizontal += left[i,j]*j
-                sum_l += 1
-        if(sum_l != 0):
-            left_middle = sum_horizontal/sum_l
+        # Calculate horizontal centers of mass
+        if l_coords[1].size > 0:
+            left_middle = np.mean(l_coords[1])
         else:
             left_middle = 0
 
-        (r_h,r_w) = right.shape
-        sum_horizontal = 0
-        sum_l = 0
-        for i in range(50,r_h):
-            for j in range(r_w):
-                if(right[i,j] == 0):
-                    continue
-                sum_horizontal += right[i,j]*j
-                sum_l += 1
-
-        if(sum_l != 0):
-            right_middle = w//2 + sum_horizontal/sum_l
+        if r_coords[1].size > 0:
+            # Remember to add the offset (w//2) for the right side
+            right_middle = (w // 2) + np.mean(r_coords[1])
         else:
-            right_middle = w-1
+            right_middle = w - 1
 
-        middle = (right_middle + left_middle)/2
+        # Final target center
+        middle = (right_middle + left_middle) / 2
 
-        watch_pixel = 160
+        # 4. Visualization
+        # Resize the background camera frame to match the prediction size (330x180)
+        current_frame = cv2.resize(current_frame, (w, h), cv2.INTER_AREA)
 
+        # Draw markers (Note: indices must be cast to int)
+        lm, rm, mid = int(left_middle), int(right_middle), int(middle)
+        
+        current_frame[:, lm, 0] = 255   # Blue line for left lane
+        current_frame[:, rm, 1] = 255   # Green line for right lane
+        current_frame[:, mid, 2] = 255  # Red line for target center
+        current_frame[:, w // 2, :] = 255 # White line for robot center
 
-
-        current_frame = cv2.resize(current_frame,(w,h),cv2.INTER_AREA)
-
-        current_frame[watch_pixel,:,0] = 255
-        current_frame[watch_pixel,:,1] = 255
-        current_frame[watch_pixel,:,2] = 255
-
-        current_frame[pred.astype(bool),1:] = 0 
-        current_frame[:,int(left_middle),0] = 255
-        current_frame[:,int(right_middle),1] = 255
-        current_frame[:,int(middle),2] = 255
-
-        current_frame[:,int(w/2),0] = 255
-        current_frame[:,int(w/2),1] = 255
-        current_frame[:,int(w/2),2] = 255
-
-  
-        cv2.imshow("camera", current_frame)   
+        cv2.imshow("UNet Perception Debug", current_frame)   
         cv2.waitKey(1)
 
+        # 5. ROS2 Message Setup
         self.pose_msg.header.frame_id = "base_link"
         self.pose_msg.header.stamp = self.get_clock().now().to_msg()
+        
+        # Physics logic: 
+        # (Center of Image - Center of Lane) / Scale
+        self.get_logger().info(f"w: {w}\nmiddle:{middle}\n")
         self.pose_msg.pose.position.x = 5.0
-        self.pose_msg.pose.position.y = (w//2 - middle )/10
+        self.pose_msg.pose.position.y = (float(w // 2) - middle) / 50.0 # Adjusted scale
         self.pose_msg.pose.position.z = 0.0
         self.pose_msg.pose.orientation.w = 1.0
-
+        self.get_logger().info(f"error_y: {self.pose_msg.pose.position.y}")
         self.transform_and_publish_pose(self.pose_msg)
 
 
-
-    def image_callback(self,msg : Image):
+    def image_callback(self, msg: Image):
+        self.get_logger().info("Received image")
         
-        current_frame = self.br.imgmsg_to_cv2(msg,desired_encoding="bgr8")
-        pred = evaluate(self.model,current_frame)
-        self.calculate_path(current_frame,pred)
-    
+        # Convert ROS msg to OpenCV (1080x720)
+        current_frame = self.br.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        
+        # CORRECT USAGE:
+        # The evaluator already has the model and transforms inside it.
+        # Just pass the frame.
+        pred = self.unet.evaluate(current_frame)
+        # --- VISUALIZATION ---
+        # Show the black and white mask
+        cv2.imshow("UNet Prediction Mask", pred)
+        
+        # Important: waitKey(1) allows the window to refresh
+        cv2.waitKey(1)
+        # ---------------------
+        # Run your math
+        self.calculate_path(current_frame, pred)
     
     def transform_and_publish_pose(self,pose_msg : PoseStamped):
+        '''
         try:
             t = self.tf_buffer.lookup_transform(
                 "world",
@@ -149,7 +148,10 @@ class Perception(Node):
                 f"Could not transform {pose_msg.header.frame_id} to base_link: {ex}"
             )
             return
+        '''
         
+        self.get_logger().info("published_msg")
+
         self.pose_publisher.publish(self.pose_msg)
 
         
